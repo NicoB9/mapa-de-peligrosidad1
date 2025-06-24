@@ -1,0 +1,218 @@
+---
+title: "Mapa de peligrosidad"
+output: html_document
+date: "2025-06-09"
+---
+
+```{r}
+library(sf)
+library(leaflet)
+library(dplyr)
+library(stringr)
+library(readxl)
+library(htmltools)
+library(htmlwidgets)
+
+# Función para procesar cada archivo KML
+procesar_kml <- function(ruta_kml, columna_peligrosidad = "Description") {
+  capa <- st_read(ruta_kml, quiet = TRUE) %>%
+    st_zm(drop = TRUE, what = "ZM")
+  
+  if (any(st_geometry_type(capa) == "GEOMETRYCOLLECTION")) {
+    capa <- st_collection_extract(capa, "POLYGON", warn = FALSE)
+  }
+  
+  capa <- capa %>%
+    mutate(
+      peligrosidad = if (columna_peligrosidad == "Description") {
+        str_extract(!!sym(columna_peligrosidad), "(?<=peligrosidad:\\s)(.*?)(?=\\s*<br>|$)")
+      } else {
+        str_trim(!!sym(columna_peligrosidad))
+      },
+      peligrosidad = str_trim(peligrosidad),
+    color = case_when(
+  str_detect(peligrosidad, regex("ALTA", ignore_case = TRUE)) ~ "red2",
+        str_detect(peligrosidad, regex("MEDIA", ignore_case = TRUE)) ~ "#FFB266",
+        str_detect(peligrosidad, regex("BAJA", ignore_case = TRUE)) &
+          !str_detect(peligrosidad, regex("MUY BAJA", ignore_case = TRUE)) ~ "#FFFF99",
+        str_detect(peligrosidad, regex("MUY BAJA|NULA", ignore_case = TRUE)) ~ "#B3E6B3",
+        TRUE ~ "#D3D3D3"
+      )
+    )
+  return(capa)
+}
+
+# Directorio con los KML y el Excel
+directorio_kml <- "C:/Users/Usuario/Desktop/Kml"
+
+# Leer todos los archivos .kml
+archivos_kml <- list.files(directorio_kml, pattern = "\\.kml$", full.names = TRUE)
+
+# Procesar cada archivo
+capas <- lapply(archivos_kml, function(archivo) {
+  nombre_archivo <- tools::file_path_sans_ext(basename(archivo))
+  columna <- if (nombre_archivo %in% c("Norte", "La Plata (2)")) "Name" else "Description"
+  capa <- procesar_kml(archivo, columna)
+  capa$zona <- nombre_archivo
+  return(capa)
+})
+
+# Unir todas las capas
+todas_las_capas <- do.call(rbind, capas)
+
+# Leer el Excel
+ruta_excel <- file.path(directorio_kml, "coordenadas.xlsx")
+puntos_df <- read_excel(ruta_excel)
+
+# Extraer lat/lon de la columna COORDENADAS
+puntos_df <- puntos_df %>%
+  mutate(
+    coords_split = str_split(COORDENADAS, ",\\s*"),
+    Latitud = as.numeric(sapply(coords_split, `[`, 1)),
+    Longitud = as.numeric(sapply(coords_split, `[`, 2))
+  ) %>%
+  filter(!is.na(Latitud) & !is.na(Longitud))
+
+# Convertir a sf
+puntos_sf <- st_as_sf(puntos_df, coords = c("Longitud", "Latitud"), crs = 4326)
+
+# CSS para puntos titilantes
+css_titilar <- tags$style(HTML("
+  .blinker {
+    animation: blinker-animation 1s linear infinite;
+  }
+  @keyframes blinker-animation {
+    50% { opacity: 0; }
+  }
+"))
+
+# Crear el mapa
+mapa <- leaflet() %>%
+  addProviderTiles("OpenStreetMap.Mapnik") %>%
+  addPolygons(
+    data = todas_las_capas,
+    fillColor = ~color,
+    color = "#666666",
+    fillOpacity = 0.5,
+    weight = 1,
+    popup = ~peligrosidad,
+    group = ~zona
+  ) %>%
+  addCircleMarkers(
+    data = puntos_sf,
+    radius = 6,
+    color = "red",
+    fillColor = "red",
+    fillOpacity = 1,
+    stroke = FALSE,
+    popup = ~`SUBTIPO | CARATULA`,
+    group = "Coordenadas",
+    options = pathOptions(className = "blinker")
+  ) %>%
+  addLayersControl(
+    overlayGroups = unique(c(todas_las_capas$zona, "Coordenadas")),
+    options = layersControlOptions(collapsed = FALSE)
+  )
+
+# Agregar CSS al mapa
+mapa <- prependContent(mapa, css_titilar)
+
+# Mostrar mapa
+mapa
+```
+
+```{r}
+library(sf)
+library(leaflet)
+library(dplyr)
+library(stringr)
+library(readxl)
+library(htmltools)
+
+# Corregir peligrosidad (incluye La Plata (2) y NAs)
+todas_las_capas <- todas_las_capas %>%
+  mutate(
+    peligrosidad = case_when(
+      zona == "La Plata (2)" ~ str_match(Description, "peligrosidad:\\s*([^<]+)")[, 2],
+      TRUE ~ peligrosidad
+    ),
+    peligrosidad = coalesce(peligrosidad, Name),
+    peligrosidad = str_trim(peligrosidad),
+    color = case_when(
+      str_detect(peligrosidad, regex("alta", ignore_case = TRUE)) ~ "#FF7F7F",
+      str_detect(peligrosidad, regex("media", ignore_case = TRUE)) ~ "#FFB266",
+      str_detect(peligrosidad, regex("baja", ignore_case = TRUE)) &
+        !str_detect(peligrosidad, regex("muy baja", ignore_case = TRUE)) ~ "#FFFF99",
+      str_detect(peligrosidad, regex("muy baja|nula", ignore_case = TRUE)) ~ "#B3E6B3",
+      TRUE ~ "#D3D3D3"
+    )
+  )
+
+# Leer el Excel con coordenadas
+ruta_excel <- file.path("C:/Users/Usuario/Desktop/Kml", "coordenadas.xlsx")
+puntos_df <- read_excel(ruta_excel)
+
+# Separar lat/lon y filtrar válidos
+puntos_sf <- puntos_df %>%
+  mutate(
+    coords_split = str_split(COORDENADAS, ",\\s*"),
+    Latitud = as.numeric(sapply(coords_split, `[`, 1)),
+    Longitud = as.numeric(sapply(coords_split, `[`, 2))
+  ) %>%
+  filter(!is.na(Latitud) & !is.na(Longitud)) %>%
+  st_as_sf(coords = c("Longitud", "Latitud"), crs = 4326)
+
+# CSS para puntos titilantes
+css_titilar <- tags$style(HTML("
+  .blinker {
+    animation: blinker-animation 1s linear infinite;
+  }
+  @keyframes blinker-animation {
+    50% { opacity: 0; }
+  }
+"))
+
+# Crear el mapa completo
+mapa <- leaflet() %>%
+  addProviderTiles("OpenStreetMap.Mapnik") %>%
+  addPolygons(
+    data = todas_las_capas,
+    fillColor = ~color,
+    color = "#666666",
+    fillOpacity = 0.5,
+    weight = 1,
+    popup = ~peligrosidad,
+    group = ~zona
+  ) %>%
+  addCircleMarkers(
+    data = puntos_sf,
+    radius = 6,
+    color = "red",
+    fillColor = "red",
+    fillOpacity = 1,
+    stroke = FALSE,
+    popup = ~`SUBTIPO | CARATULA`,
+    group = "Coordenadas",
+    options = pathOptions(className = "blinker")
+  ) %>%
+  addLayersControl(
+    overlayGroups = unique(c(todas_las_capas$zona, "Coordenadas")),
+    options = layersControlOptions(collapsed = FALSE)
+  )
+
+# Agregar CSS para titilar
+mapa <- prependContent(mapa, css_titilar)
+
+# Mostrar el mapa
+mapa
+
+```
+
+```{r}
+library(htmlwidgets)
+saveWidget(mapa, file = "C:/Users/Usuario/Desktop/Mapa_de_peligrosidad.html", selfcontained = TRUE, title = "Mapa de peligrosidad")
+
+```
+
+```{}
+```
